@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mini Dashboard Trading Fluido</title>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+<style>
+body {font-family: Arial, sans-serif; background: #f4f6f8; margin:0; padding:20px; text-align:center;}
+h1 {color:#222;}
+input, button {padding:10px; margin:5px; font-size:16px;}
+#main-container {display:flex; flex-direction:row; justify-content:center; gap:20px;}
+#grafico-container {width:65%; max-width:700px; height:500px; background:#fff; padding:20px; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.1);}
+#painel {width:25%; max-width:300px; text-align:left;}
+#resultado {margin-top:10px; font-weight:bold; font-size:16px;}
+#indicadores {margin-top:10px; font-size:14px; color:#555; max-height:300px; overflow-y:auto;}
+#historico {margin-top:10px; font-size:14px; color:#555;}
+footer {margin-top:18px; font-size:12px; color:#666;}
+.comprar {color:green; font-weight:bold;}
+.vender {color:red; font-weight:bold;}
+</style>
+</head>
+<body>
+<h1>📈 Mini Dashboard Trading Fluido</h1>
+<p>Digite o ticker (ações ex: PETR4, VALE3, AAPL | cripto ex: BTC/USD, ETH/USD)</p>
+<input id="ticker" type="text" placeholder="Ex: PETR4 ou BTC/USD">
+<button onclick="iniciarAnalise()">Iniciar Análise</button>
+<button onclick="limparHistorico()">Limpar Histórico</button>
+
+<div id="main-container">
+    <div id="grafico-container"></div>
+    <div id="painel">
+        <div id="resultado"></div>
+        <div id="indicadores"></div>
+        <div id="historico"></div>
+    </div>
+</div>
+
+<audio id="alertaCompra" src="https://freesound.org/data/previews/256/256113_3263906-lq.mp3" preload="auto"></audio>
+<audio id="alertaVenda" src="https://freesound.org/data/previews/256/256114_3263906-lq.mp3" preload="auto"></audio>
+
+<footer>Chave Twelve Data embutida.</footer>
+
+<script>
+let historico=[];
+const API_KEY="b4fe14d5757f4a06b53c571c3f1eedd0";
+let chart, candleSeries;
+let fetchIntervalID, animIntervalID;
+let precosGlobais=[];
+let historicoIndicadores=[];
+let ultimoSinal=null;
+
+let ultimoCandleAPI=null;
+let candleAtual=null;
+let precoAnterior=null;
+
+// Funções RSI e MACD
+function calcularRSI(precos, periodo=14){
+    if(precos.length<periodo) return 50;
+    let ganhos=0, perdas=0;
+    for(let i=precos.length-periodo;i<precos.length;i++){
+        let diff=precos[i]-precos[i-1];
+        if(diff>0) ganhos+=diff;
+        else perdas-=diff;
+    }
+    let rs = perdas===0 ? 100 : ganhos/perdas;
+    return 100-(100/(1+rs));
+}
+
+function calcularMACD(precos, curto=12, longo=26, sinal=9){
+    function EMA(arr,n){
+        let k=2/(n+1);
+        let ema=[arr[0]];
+        for(let i=1;i<arr.length;i++){
+            ema.push(arr[i]*k + ema[i-1]*(1-k));
+        }
+        return ema;
+    }
+    let emaCurta = EMA(precos,curto);
+    let emaLonga = EMA(precos,longo);
+    let macd = emaCurta.map((v,i)=>v-(emaLonga[i]||0));
+    let signal = EMA(macd.slice(longo-1), sinal);
+    return {macd:macd.slice(longo-1), signal:signal};
+}
+
+// Inicializa análise
+function iniciarAnalise(){
+    buscarDados();
+    if(fetchIntervalID) clearInterval(fetchIntervalID);
+    if(animIntervalID) clearInterval(animIntervalID);
+    fetchIntervalID = setInterval(buscarUltimoCandle,10000); // API 10s
+    animIntervalID = setInterval(animarUltimoCandle,1000);   // animação 1s
+}
+
+// Busca histórico completo inicial
+async function buscarDados(){
+    const ticker=document.getElementById("ticker").value.trim();
+    if(!ticker){alert("Digite um ticker válido."); return;}
+    try{
+        const url=`https://api.twelvedata.com/time_series?symbol=${ticker}&interval=1min&outputsize=50&apikey=${API_KEY}`;
+        const resp=await fetch(url);
+        const data=await resp.json();
+        if(data.status==="error"){document.getElementById("resultado").innerText="Erro: "+data.message; return;}
+        const values=data.values.reverse();
+        const candles = values.map(v=>({
+            time:new Date(v.datetime.replace(" ","T")).getTime()/1000,
+            open:parseFloat(v.open),
+            high:parseFloat(v.high),
+            low:parseFloat(v.low),
+            close:parseFloat(v.close)
+        }));
+        precosGlobais = values.map(v=>parseFloat(v.close));
+        candleAtual = {...candles[candles.length-1]};
+        ultimoCandleAPI = {...candles[candles.length-1]};
+        precoAnterior = candleAtual.close;
+
+        atualizarGrafico(candles);
+        analisarIndicadores(precosGlobais);
+        atualizarHistorico(document.getElementById("ticker").value.trim());
+    }catch(e){ console.error(e); document.getElementById("resultado").innerText="Erro ao buscar dados.";}
+}
+
+// Busca último candle da API
+async function buscarUltimoCandle(){
+    const ticker=document.getElementById("ticker").value.trim();
+    if(!ticker) return;
+    try{
+        const url=`https://api.twelvedata.com/time_series?symbol=${ticker}&interval=1min&outputsize=1&apikey=${API_KEY}`;
+        const resp=await fetch(url);
+        const data=await resp.json();
+        if(data.status==="error") return;
+        const ultimo=data.values[0];
+        ultimoCandleAPI = {
+            time:new Date(ultimo.datetime.replace(" ","T")).getTime()/1000,
+            open:parseFloat(ultimo.open),
+            high:parseFloat(ultimo.high),
+            low:parseFloat(ultimo.low),
+            close:parseFloat(ultimo.close)
+        };
+        precosGlobais.push(ultimoCandleAPI.close);
+        if(precosGlobais.length>100) precosGlobais.shift();
+        analisarIndicadores(precosGlobais);
+    }catch(e){ console.error(e);}
+}
+
+// Animação do último candle para efeito fluido
+function animarUltimoCandle(){
+    if(!ultimoCandleAPI || !candleAtual) return;
+    const passo=(ultimoCandleAPI.close - precoAnterior)/10;
+    candleAtual.close += passo;
+    candleAtual.high = Math.max(candleAtual.high, candleAtual.close);
+    candleAtual.low = Math.min(candleAtual.low, candleAtual.close);
+    candleSeries.update(candleAtual);
+    precoAnterior = candleAtual.close;
+}
+
+// Atualiza gráfico inicial
+function atualizarGrafico(candles){
+    const container=document.getElementById("grafico-container");
+    container.innerHTML="";
+    chart = LightweightCharts.createChart(container,{width:container.clientWidth,height:500});
+    candleSeries = chart.addCandlestickSeries();
+    candleSeries.setData(candles);
+}
+
+// Análise e alertas
+function analisarIndicadores(precos){
+    if(precos.length<10) return;
+    const mediaCurta=precos.slice(-5).reduce((a,b)=>a+b,0)/5;
+    const mediaLonga=precos.slice(-10).reduce((a,b)=>a+b,0)/10;
+    const precoAtual=precos[precos.length-1];
+    let recomendacao="", classe="";
+    if(mediaCurta>mediaLonga && precoAtual>mediaCurta){recomendacao="💰 Compra"; classe="comprar"; if(ultimoSinal!=="compra"){document.getElementById("alertaCompra").play(); ultimoSinal="compra";}}
+    else if(mediaCurta<mediaLonga && precoAtual<mediaCurta){recomendacao="📉 Venda"; classe="vender"; if(ultimoSinal!=="venda"){document.getElementById("alertaVenda").play(); ultimoSinal="venda";}}
+    else{recomendacao="⚖️ Aguardar"; classe=""; ultimoSinal=null;}
+
+    const rsi=calcularRSI(precos);
+    const macdObj=calcularMACD(precos);
+    const macdUlt=macdObj.macd[macdObj.macd.length-1];
+    const signalUlt=macdObj.signal[macdObj.signal.length-1];
+
+    historicoIndicadores.push({time:new Date().toLocaleTimeString(), rsi:rsi.toFixed(2), macd:macdUlt.toFixed(2), sinal:signalUlt.toFixed(2), recomendacao:recomendacao});
+    if(historicoIndicadores.length>20) historicoIndicadores.shift();
+
+    document.getElementById("resultado").innerHTML=`<span class="${classe}">Preço atual: ${precoAtual.toFixed(2)} | ${recomendacao}</span>`;
+    document.getElementById("indicadores").innerHTML=historicoIndicadores.map(i=>`${i.time} | RSI:${i.rsi} | MACD:${i.macd} | Signal:${i.sinal} | ${i.recomendacao}`).join('<br>');
+}
+
+// Histórico
+function atualizarHistorico(ticker){ historico.push(ticker); document.getElementById("historico").innerText="Histórico: "+historico.join(", "); }
+function limparHistorico(){ historico=[]; historicoIndicadores=[]; document.getElementById("historico").innerText=""; document.getElementById("indicadores").innerHTML=""; ultimoSinal=null; }
+
+</script>
+</body>
+</html>
