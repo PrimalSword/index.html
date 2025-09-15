@@ -90,7 +90,7 @@ function iniciarAnalise(){
     buscarDados();
     if(fetchIntervalID) clearInterval(fetchIntervalID);
     if(animIntervalID) clearInterval(animIntervalID);
-    fetchIntervalID = setInterval(buscarUltimoCandle,100000); // API 10s
+    fetchIntervalID = setInterval(buscarUltimoCandle,60000); // API 10s
     animIntervalID = setInterval(animarUltimoCandle,1000);   // animação 1s
 }
 
@@ -195,5 +195,6 @@ function limparHistorico(){ historico=[]; historicoIndicadores=[]; document.getE
 </script>
 </body>
 </html>
+
 
 
